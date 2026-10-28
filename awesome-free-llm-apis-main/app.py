@@ -39,6 +39,9 @@ APP_TITLE = "Magdy AI Suite"
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 PLACEHOLDER_KEY = "YOUR_GROQ_API_KEY_HERE"
 MAX_HISTORY = 20
+# حد تقريبي لحجم سجل المحادثة المرسل (بالحروف). الخطة المجانية في Groq لها حد توكنز لكل طلب
+# يختلف حسب النموذج، لذلك نرسل الأحدث فقط ونتجاهل الأقدم.
+MAX_CONTEXT_CHARS = 9000
 CTE_NAME = "🧭 Clear Thinking Engine"
 
 # قائمة احتياطية فقط لو تعذّر جلب النماذج الحالية من Groq.
@@ -248,6 +251,11 @@ def key_problems(k):
 
 def explain_error(e, source=""):
     src = f" (المفتاح المستخدم الآن مصدره: {source})" if source else ""
+    if getattr(e, "status_code", None) == 413:
+        m = re.search(r"Limit (\d+), Requested (\d+)", str(e))
+        detail = f" (حد النموذج {m.group(1)} توكن، وطلبك {m.group(2)})" if m else ""
+        return ("حجم الطلب أكبر من حد Groq للنموذج الحالي" + detail + ". الحل: قسّم الكود أو الرسالة "
+                "لأجزاء أصغر، أو اضغط «محادثة جديدة» لمسح السجل، أو جرّب نموذجًا آخر (حدودها تختلف).")
     if isinstance(e, groq.AuthenticationError):
         return ("Groq رفضت المفتاح (401)" + src + ". افتح «حالة المفتاح» في الشريط الجانبي واضغط "
                 "«اختبار المفتاح». لو المصدر Secrets فغيّر المفتاح من إعدادات التطبيق على Streamlit Cloud.")
@@ -362,8 +370,22 @@ def no_key_notice():
 
 
 # ------------------------------------------------------------------ مساحات المحادثة
+def trim_history(history, max_chars=MAX_CONTEXT_CHARS):
+    """يحتفظ بأحدث الرسائل التي يتسع لها الحد، ودائمًا بآخر رسالة."""
+    kept, total = [], 0
+    for m in reversed(history[-MAX_HISTORY:]):
+        total += len(m["content"])
+        if kept and total > max_chars:
+            break
+        kept.append(m)
+    return list(reversed(kept))
+
+
 def stream_answer(ctx, system_prompt, history):
-    messages = [{"role": "system", "content": system_prompt}] + history[-MAX_HISTORY:]
+    recent = trim_history(history)
+    if len(recent) < len(history[-MAX_HISTORY:]):
+        st.caption("تم تجاهل الرسائل الأقدم عند الإرسال لتقليل حجم الطلب.")
+    messages = [{"role": "system", "content": system_prompt}] + recent
     stream = ctx["client"].chat.completions.create(
         model=ctx["model"], messages=messages, temperature=ctx["temperature"], stream=True)
     status = st.empty()
